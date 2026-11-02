@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { render, fireEvent, screen } from 'spec/helpers/testing-library';
+import { act, render, fireEvent, screen } from 'spec/helpers/testing-library';
 import {
   ChartMetadata,
   getChartMetadataRegistry,
@@ -25,11 +25,18 @@ import {
   FeatureFlag,
   FeatureFlagMap,
   DataMask,
+  ErrorTypeEnum,
+  Hooks,
+  SupersetError,
 } from '@superset-ui/core';
 import ChartRenderer, {
   ChartRendererProps,
 } from 'src/components/Chart/ChartRenderer';
 import { ChartSource } from 'src/types/ChartSource';
+import {
+  getErrorMessageComponentRegistry,
+  OAuth2RedirectMessage,
+} from 'src/components/ErrorMessage';
 import type { Dispatch } from 'redux';
 
 interface MockSuperChartProps {
@@ -37,6 +44,9 @@ interface MockSuperChartProps {
   formData?: JsonObject;
   [key: string]: unknown;
 }
+
+let mockQueryError: SupersetError | undefined;
+const mockRetryQuery = jest.fn();
 
 jest.mock('@superset-ui/core', () => ({
   ...jest.requireActual('@superset-ui/core'),
@@ -73,6 +83,11 @@ jest.mock('@superset-ui/core', () => ({
         Emit semantic mask
       </button>
       {JSON.stringify(postTransformProps(props).formData)}
+      {mockQueryError &&
+        (props.hooks as Hooks).renderQueryError?.(
+          mockQueryError,
+          mockRetryQuery,
+        )}
     </div>
   ),
 }));
@@ -132,6 +147,36 @@ beforeAll(() => {
 });
 afterAll(() => {
   window.featureFlags = {} as FeatureFlagMap;
+});
+
+test('self-contained query errors offer OAuth and retry their own query on completion', async () => {
+  getErrorMessageComponentRegistry().registerValue(
+    ErrorTypeEnum.OAUTH2_REDIRECT,
+    OAuth2RedirectMessage,
+  );
+  mockQueryError = {
+    error_type: ErrorTypeEnum.OAUTH2_REDIRECT,
+    level: 'warning',
+    message: 'Authorization needed',
+    extra: { url: '/connect-personal-layer', tab_id: 'personal-query-tab' },
+  };
+  try {
+    render(<ChartRenderer {...requiredProps} />);
+    expect(
+      screen.getByRole('link', { name: 'provide authorization' }),
+    ).toHaveAttribute('href', '/connect-personal-layer');
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'oauth2_auth_complete',
+          newValue: JSON.stringify({ tabId: 'personal-query-tab' }),
+        }),
+      );
+    });
+    expect(mockRetryQuery).toHaveBeenCalledTimes(1);
+  } finally {
+    mockQueryError = undefined;
+  }
 });
 
 test('should render SuperChart', () => {
